@@ -506,11 +506,28 @@ public final class Pine {
         Class<?> declaring = origin.getDeclaringClass();
         syncMethodInfo(origin, backup, hookRecord.skipUpdateDeclaringClass);
         // FIXME: GC happens here (you can add Runtime.getRuntime().gc() to test) will crash backup calling
-        Object result = backup.invoke(thisObject, args);
-        // Explicit use declaring_class object to ensure it has reference on stack
-        // and avoid being moved by gc. (invalid for now)
-        declaring.getClass();
-        return result;
+        try {
+            Object result = backup.invoke(thisObject, args);
+            // Explicit use declaring_class object to ensure it has reference on stack
+            // and avoid being moved by gc. (invalid for now)
+            declaring.getClass();
+            return result;
+        } catch (Throwable e) {
+            // 为了规避以下问题, 主要机型: PJH110
+            // java.lang.IllegalArgumentException: Expected receiver of type android.content.ContextWrapper, but got java.lang.String
+            //	at java.lang.reflect.Method.invoke(Native Method)
+            //	at top.canyie.pine.Pine.a(TbsSdkJava:14)
+            //	at top.canyie.pine.Pine$CallFrame.e(TbsSdkJava:7)
+            //	at top.canyie.pine.Pine.n(TbsSdkJava:109)
+            //	at top.canyie.pine.entry.Arm64Entry.handleBridge(TbsSdkJava:324)
+            //	at top.canyie.pine.entry.Arm64Entry.objectBridge(TbsSdkJava:1)
+            //	at com.umeng.commonsdk.internal.c.workEvent(TbsSdkJava:195)
+            //	at com.umeng.commonsdk.framework.UMWorkDispatch.handleEvent(TbsSdkJava:44)
+            //	at com.umeng.commonsdk.framework.UMWorkDispatch.access$000(TbsSdkJava:1)
+            //	at com.umeng.commonsdk.framework.UMWorkDispatch$1.handleMessage(TbsSdkJava:32)
+            //	at android.os.Handler.dispatchMessage(Handler.java:112)
+        }
+        return null;
     }
 
     /**
