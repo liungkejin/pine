@@ -100,6 +100,7 @@ void Pine_init0(JNIEnv* env, jclass Pine, jint androidVersion, jboolean debug, j
     PineConfig::anti_checks = static_cast<bool>(antiChecks);
     TrampolineInstaller::GetOrInitDefault(); // trigger TrampolineInstaller::default_ initialization
     Android::Init(env, androidVersion, disableHiddenApiPolicy, disableHiddenApiPolicyForPlatformDomain);
+    if (env->ExceptionCheck()) return;
     {
         ScopedLocalClassRef Ruler(env, "top/canyie/pine/Ruler");
         auto m1 = art::ArtMethod::Require(env, Ruler.Get(), "m1", "(F)V", true);

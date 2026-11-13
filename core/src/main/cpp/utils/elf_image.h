@@ -16,6 +16,7 @@
 
 #if defined(__LP64__)
 typedef Elf64_Ehdr Elf_Ehdr;
+typedef Elf64_Phdr Elf_Phdr;
 typedef Elf64_Shdr Elf_Shdr;
 typedef Elf64_Addr Elf_Addr;
 typedef Elf64_Dyn Elf_Dyn;
@@ -26,6 +27,7 @@ typedef Elf64_Off Elf_Off;
 #define ELF_R_SYM(i) ELF64_R_SYM(i)
 #else
 typedef Elf32_Ehdr Elf_Ehdr;
+typedef Elf32_Phdr Elf_Phdr;
 typedef Elf32_Shdr Elf_Shdr;
 typedef Elf32_Addr Elf_Addr;
 typedef Elf32_Dyn Elf_Dyn;
@@ -64,8 +66,7 @@ namespace pine {
     private:
         void ParseMemory(Elf_Ehdr* header, bool is_debugdata);
         void ParseDebugdata(uint8_t* debugdata, size_t size);
-        // Pine changed: GetModuleBase is private
-        void* GetModuleBase(const char* name);
+        bool FindLoadBias(int fd);
 
 #ifdef __LP64__
         static constexpr const char* kSystemLibDir = "/system/lib64/";
@@ -78,9 +79,8 @@ namespace pine {
 #endif
 
         const char* elf_name_ = nullptr;
-        void* base_ = nullptr;
+        uintptr_t load_bias_ = 0;
         off_t size_ = 0;
-        off_t bias_ = -4396;
 
         Elf_Ehdr* header_ = nullptr;
 

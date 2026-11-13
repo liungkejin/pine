@@ -10,6 +10,10 @@
 
 #include <cstring>
 #include <malloc.h>
+#include <dlfcn.h>
+#include <link.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <xz.h>
@@ -31,13 +35,6 @@ void ElfImage::Open(const char* path, bool warn_if_nonexist, bool warn_if_symtab
     size_ = lseek(fd, 0, SEEK_END);
     if (UNLIKELY(size_ <= 0)) {
         LOGE("lseek() failed for %s: %s", path, strerror(errno));
-    }
-
-    // Get the base load address of the specified elf
-    // This should happen before calling mmap to avoid conflicts
-    base_ = GetModuleBase(path);
-    if (UNLIKELY(!base_)) {
-        LOGE("Cannot find the base loaded address of %s in memory!", path);
         close(fd);
         return;
     }
@@ -50,6 +47,19 @@ void ElfImage::Open(const char* path, bool warn_if_nonexist, bool warn_if_symtab
         return;
     }
 
+    // Program headers describe runtime virtual addresses; section file offsets
+    // do not. Reject invalid headers before calculating the loaded address.
+    if (static_cast<size_t>(size_) < sizeof(Elf_Ehdr) || memcmp(header_->e_ident, ELFMAG, SELFMAG) != 0 ||
+            header_->e_phentsize != sizeof(Elf_Phdr) || header_->e_phnum == 0 ||
+            header_->e_phoff > static_cast<size_t>(size_) ||
+            header_->e_phnum > (size_ - header_->e_phoff) / sizeof(Elf_Phdr) ||
+            !FindLoadBias(fd)) {
+        LOGE("Cannot locate loaded ELF image for %s", path);
+        munmap(header_, size_);
+        header_ = nullptr;
+        close(fd);
+        return;
+    }
     close(fd);
 
     ParseMemory(header_, false);
@@ -72,7 +82,7 @@ void ElfImage::ParseMemory(Elf_Ehdr* header, bool is_debugdata) {
         switch (section_h->sh_type) {
             case SHT_DYNSYM:
                 // Shall we reject ELFs with duplicated dynsym sections?
-                if (!is_debugdata && bias_ == -4396) {
+                if (!is_debugdata) {
                     dynsym_ = reinterpret_cast<Elf_Sym*>(header_address + section_h->sh_offset);
                     dynsym_count_ = section_h->sh_size / entsize;
                 }
@@ -102,9 +112,6 @@ void ElfImage::ParseMemory(Elf_Ehdr* header, bool is_debugdata) {
                 break;
             case SHT_PROGBITS:
                 if (dynstr_ == nullptr || dynsym_ == nullptr || is_debugdata) break;
-                if (bias_ == -4396) {
-                    bias_ = (off_t) section_h->sh_addr - (off_t) section_h->sh_offset;
-                }
                 if (strcmp(".gnu_debugdata", sname) == 0) {
                     auto debugdata = reinterpret_cast<uint8_t*>(header_address + section_h->sh_offset);
                     ParseDebugdata(debugdata, section_h->sh_size);
@@ -207,7 +214,7 @@ Elf_Addr ElfImage::LinearLookup(const char* name) const {
 }
 
 void* ElfImage::GetSymbolAddress(const char* name, bool warn_if_missing) const {
-    if (UNLIKELY(!base_))
+    if (UNLIKELY(!header_))
         return nullptr;
     // TODO: hash based lookup
     Elf_Addr offset = LinearLookup(name);
@@ -215,36 +222,102 @@ void* ElfImage::GetSymbolAddress(const char* name, bool warn_if_missing) const {
         if (warn_if_missing) LOGE("Symbol %s not found in elf %s", name, elf_name_);
         return nullptr;
     }
-    return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(base_) + offset - bias_);
+    auto phdrs = reinterpret_cast<const Elf_Phdr*>(reinterpret_cast<uintptr_t>(header_) + header_->e_phoff);
+    for (int i = 0; i < header_->e_phnum; ++i) {
+        const auto& segment = phdrs[i];
+        if (segment.p_type == PT_LOAD && (segment.p_flags & (PF_R | PF_X)) &&
+                offset >= segment.p_vaddr && offset - segment.p_vaddr < segment.p_memsz) {
+            return reinterpret_cast<void*>(load_bias_ + offset);
+        }
+    }
+    if (warn_if_missing) LOGE("Symbol %s is outside the loaded segments of %s", name, elf_name_);
+    return nullptr;
 }
 
 bool ElfImage::HasSymbol(const char* name) const {
     return GetSymbolAddress(name, false) != nullptr;
 }
 
-void* ElfImage::GetModuleBase(const char* name) {
-    FILE* maps;
-    char buff[256];
-    off_t load_addr;
+bool ElfImage::FindLoadBias(int fd) {
+    struct stat file_stat{};
+    if (fstat(fd, &file_stat) != 0) return false;
+
+    // A raw mmap of libart (including one held by another ElfImage) is not the
+    // relocated library. Only the linker knows which mappings it actually loaded.
+    // Resolve dynamically because ARM Android 4.4 has no dl_iterate_phdr API.
+    using IteratePhdr = int (*)(int (*)(dl_phdr_info*, size_t, void*), void*);
+    auto iterate = reinterpret_cast<IteratePhdr>(dlsym(RTLD_DEFAULT, "dl_iterate_phdr"));
+    if (iterate) {
+        struct Search {
+            const struct stat* file_stat;
+            uintptr_t bias = 0;
+            bool found = false;
+        } search{&file_stat};
+        iterate([](dl_phdr_info* info, size_t, void* data) {
+            auto* search = static_cast<Search*>(data);
+            struct stat loaded_stat{};
+            if (!info->dlpi_name) return 0;
+            if (stat(info->dlpi_name, &loaded_stat) == 0) {
+                if (loaded_stat.st_dev != search->file_stat->st_dev ||
+                        loaded_stat.st_ino != search->file_stat->st_ino) return 0;
+            } else {
+                // Older linkers may report only a basename. Identify the file
+                // containing the linker's program headers instead of guessing a path.
+                FILE* maps = WrappedFOpen("/proc/self/maps", "re");
+                if (!maps) return 0;
+                char line[1024];
+                bool matches = false;
+                const uintptr_t phdr = reinterpret_cast<uintptr_t>(info->dlpi_phdr);
+                while (fgets(line, sizeof(line), maps)) {
+                    unsigned long start, end;
+                    unsigned int dev_major, dev_minor;
+                    unsigned long long inode;
+                    if (sscanf(line, "%lx-%lx %*s %*s %x:%x %llu", &start, &end,
+                               &dev_major, &dev_minor, &inode) == 5 && phdr >= start && phdr < end) {
+                        matches = inode == search->file_stat->st_ino &&
+                                makedev(dev_major, dev_minor) == search->file_stat->st_dev;
+                        break;
+                    }
+                }
+                fclose(maps);
+                if (!matches) return 0;
+            }
+            search->bias = info->dlpi_addr;
+            search->found = true;
+            return 1;
+        }, &search);
+        load_bias_ = search.bias;
+        return search.found;
+    }
+
+    // Android 4.4 fallback: match the file identity and an executable PT_LOAD,
+    // then account for its file offset. A read-only file mapping is insufficient.
+    FILE* maps = WrappedFOpen("/proc/self/maps", "re");
+    if (!maps) return false;
+    auto phdrs = reinterpret_cast<const Elf_Phdr*>(reinterpret_cast<uintptr_t>(header_) + header_->e_phoff);
+    const uintptr_t page_mask = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE)) - 1;
+    char line[1024];
     bool found = false;
-    maps = WrappedFOpen("/proc/self/maps", "re");
-    while (fgets(buff, sizeof(buff), maps)) {
-        if (strstr(buff, name) && (strstr(buff, "r-xp") || strstr(buff, "r--p"))) {
+    while (!found && fgets(line, sizeof(line), maps)) {
+        unsigned long start, end, offset;
+        unsigned int dev_major, dev_minor;
+        unsigned long long inode;
+        char permissions[5];
+        if (sscanf(line, "%lx-%lx %4s %lx %x:%x %llu", &start, &end, permissions,
+                   &offset, &dev_major, &dev_minor, &inode) != 7 || permissions[2] != 'x' ||
+                inode != file_stat.st_ino || makedev(dev_major, dev_minor) != file_stat.st_dev) continue;
+        for (int i = 0; i < header_->e_phnum; ++i) {
+            const auto& segment = phdrs[i];
+            const uintptr_t file_start = segment.p_offset & ~page_mask;
+            if (segment.p_type != PT_LOAD || !(segment.p_flags & PF_X) || offset < file_start ||
+                    offset - file_start >= segment.p_filesz + (segment.p_offset & page_mask)) continue;
+            const uintptr_t virtual_start = (segment.p_vaddr & ~page_mask) + offset - file_start;
+            if (start < virtual_start) continue;
+            load_bias_ = start - virtual_start;
             found = true;
             break;
         }
     }
-
-    if (UNLIKELY(!found)) {
-        LOGE("Failed to read load address for %s", name);
-        fclose(maps);
-        return nullptr;
-    }
-
-    if (UNLIKELY(sscanf(buff, "%lx", &load_addr) != 1))
-        LOGE("Failed to read load address for %s", name);
-
     fclose(maps);
-
-    return reinterpret_cast<void*>(load_addr);
+    return found;
 }

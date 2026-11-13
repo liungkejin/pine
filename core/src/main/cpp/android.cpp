@@ -61,6 +61,15 @@ void Android::Init(JNIEnv* env, int sdk_version, bool disable_hiddenapi_policy, 
             }
         }
 
+        if (UNLIKELY(!art_lib_handle.IsOpened())) {
+            jclass exception = env->FindClass("java/lang/IllegalStateException");
+            if (exception) {
+                env->ThrowNew(exception, "Cannot locate the loaded ART library");
+                env->DeleteLocalRef(exception);
+            }
+            return;
+        }
+
         if (Android::version >= Android::kR) {
             suspend_all = reinterpret_cast<void (*)(void*, const char*, bool)>(art_lib_handle.GetSymbolAddress(
                     "_ZN3art16ScopedSuspendAllC1EPKcb"));

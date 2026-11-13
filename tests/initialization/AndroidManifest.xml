@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="top.canyie.pine.regression">
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
+    <application android:label="Pine initialization regression" android:extractNativeLibs="true" />
+    <instrumentation android:name=".RegressionInstrumentation"
+        android:targetPackage="top.canyie.pine.regression" />
+</manifest>
