@@ -8,6 +8,8 @@
     public static long suspendVM;
     public static long resumeVM;
     private static int arch;
+    # Called by the runtime-generated typed bridge DEX.
+    public static java.lang.Object handleCall(top.canyie.pine.Pine$HookRecord, java.lang.Object, java.lang.Object[]);
 }
 -keep class top.canyie.pine.Pine$HookRecord {
     public long trampoline;

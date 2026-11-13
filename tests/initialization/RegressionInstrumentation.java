@@ -16,12 +16,19 @@ public class RegressionInstrumentation extends Instrumentation {
         String scenario = arguments.getString("scenario", "normal");
         Bundle result = new Bundle();
         try {
-            InitializationTest.main(new String[] {
-                    getTargetContext().getApplicationInfo().nativeLibraryDir, scenario});
-            result.putString("stream", "PASS initialization " + scenario + "\n");
+            String directory = getTargetContext().getApplicationInfo().nativeLibraryDir;
+            String detail = "";
+            if (scenario.startsWith("gc_")) {
+                detail = GcReferenceTest.run(directory, scenario);
+            } else if (scenario.startsWith("typed_")) {
+                detail = TypedBridgeTest.run(directory, scenario.equals("typed_inline"), scenario.equals("typed_jit"));
+            } else {
+                InitializationTest.main(new String[] {directory, scenario});
+            }
+            result.putString("stream", "PASS " + scenario + " " + detail + "\n");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable failure) {
-            result.putString("stream", "FAIL initialization " + scenario + ": " + failure + "\n");
+            result.putString("stream", "FAIL " + scenario + ": " + android.util.Log.getStackTraceString(failure) + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
     }

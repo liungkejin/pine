@@ -179,7 +179,7 @@ static jfieldID GetHookRecordTrampolineField(JNIEnv* env, jobject hookRecord) {
 
 jobject Pine_hook0(JNIEnv* env, jclass, jlong threadAddress, jclass declaring, jobject hookRecord,
                    jobject javaTarget, jobject javaBridge, jboolean isInlineHook, jboolean isJni,
-                   jboolean isProxy) {
+                   jboolean isProxy, jboolean typedBridge) {
     jfieldID HookRecord_trampoline = GetHookRecordTrampolineField(env, hookRecord);
     auto thread = reinterpret_cast<art::Thread*>(threadAddress);
     auto target = art::ArtMethod::FromReflectedMethod(env, javaTarget);
@@ -259,9 +259,18 @@ jobject Pine_hook0(JNIEnv* env, jclass, jlong threadAddress, jclass declaring, j
         // so we need to suspend other threads to avoid errors.
         ScopedSuspendVM suspend_vm(thread);
 
-        void* call_origin = is_inline_hook
-                            ? trampoline_installer->InstallInlineTrampoline(target, bridge, skip_first_few_bytes)
-                            : trampoline_installer->InstallReplacementTrampoline(target, bridge);
+        // Typed bridges have the target's calling convention. Jump without spilling object
+        // references into the legacy Extras buffer, where moving GC cannot update them.
+        void* call_origin;
+        if (JBOOL_TRUE(typedBridge)) {
+            call_origin = is_inline_hook
+                    ? trampoline_installer->InstallDirectJumpInlineTrampoline(target, bridge, skip_first_few_bytes)
+                    : trampoline_installer->InstallDirectJumpReplacementTrampoline(target, bridge);
+        } else {
+            call_origin = is_inline_hook
+                    ? trampoline_installer->InstallInlineTrampoline(target, bridge, skip_first_few_bytes)
+                    : trampoline_installer->InstallReplacementTrampoline(target, bridge);
+        }
 
         if (LIKELY(call_origin)) {
             backup->BackupFrom(target, call_origin, is_inline_hook, is_native, is_proxy);
@@ -593,7 +602,7 @@ static const JNINativeMethod gMethods[] = {
         {"init0", "(IZZZZZ)V", (void*) Pine_init0},
         {"enableFastNative", "()V", (void*) Pine_enableFastNative},
         {"getArtMethod", "(Ljava/lang/reflect/Member;)J", (void*) Pine_getArtMethod},
-        {"hook0", "(JLjava/lang/Class;Ltop/canyie/pine/Pine$HookRecord;Ljava/lang/reflect/Member;Ljava/lang/reflect/Method;ZZZ)Ljava/lang/reflect/Method;", (void*) Pine_hook0},
+        {"hook0", "(JLjava/lang/Class;Ltop/canyie/pine/Pine$HookRecord;Ljava/lang/reflect/Member;Ljava/lang/reflect/Method;ZZZZ)Ljava/lang/reflect/Method;", (void*) Pine_hook0},
         {"hookReplace0", "(JLjava/lang/Class;Ltop/canyie/pine/Pine$HookRecord;Ljava/lang/reflect/Member;Ljava/lang/reflect/Method;Ljava/lang/reflect/Method;ZZZ)Ljava/lang/reflect/Method;", (void*) Pine_hookReplace},
         {"compile0", "(JLjava/lang/reflect/Member;)Z", (void*) Pine_compile0},
         {"decompile0", "(Ljava/lang/reflect/Member;Z)Z", (void*) Pine_decompile0},

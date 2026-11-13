@@ -17,6 +17,7 @@ parser.add_argument('--build-tools', default='35.0.0')
 parser.add_argument('--aar', type=Path, required=True)
 parser.add_argument('--abi', choices=['arm64-v8a', 'armeabi-v7a'], required=True)
 parser.add_argument('--out', type=Path, required=True)
+parser.add_argument('--minify', action='store_true', help='Run R8 with the AAR consumer rules')
 args = parser.parse_args()
 source = Path(__file__).resolve().parent
 out = args.out.resolve()
@@ -32,13 +33,25 @@ run('cmake', '-S', source, '-B', native, '-G', 'Ninja',
 run('cmake', '--build', native, '-j', '4')
 with zipfile.ZipFile(args.aar) as aar:
     (out / 'pine-classes.jar').write_bytes(aar.read('classes.jar'))
+    (out / 'consumer-rules.pro').write_bytes(aar.read('proguard.txt'))
 classes = out / 'classes'
 classes.mkdir(exist_ok=True)
 run(java / 'javac', '-source', '8', '-target', '8', '-cp',
     os.pathsep.join([str(out / 'pine-classes.jar'), str(android_jar)]), '-d', classes,
-    source / 'InitializationTest.java', source / 'RegressionInstrumentation.java')
+    *sorted(source.glob('*.java')))
 run(java / 'jar', 'cf', out / 'test-classes.jar', '-C', classes, '.')
-run(java / 'java', '-cp', tools / 'lib/d8.jar', 'com.android.tools.r8.D8',
+compiler = 'com.android.tools.r8.D8'
+options = []
+if args.minify:
+    compiler = 'com.android.tools.r8.R8'
+    # Tests use reflection to look up their targets. Keep them, but optimize/rename Pine
+    # with only its shipping consumer rules so generated DEX linkage is exercised.
+    (out / 'test-rules.pro').write_text(
+        '-keep class top.canyie.pine.regression.** { *; }\n'
+        '-keepattributes InnerClasses,EnclosingMethod,Signature\n')
+    options = ['--release', '--pg-conf', out / 'consumer-rules.pro',
+               '--pg-conf', out / 'test-rules.pro', '--pg-map-output', out / 'mapping.txt']
+run(java / 'java', '-cp', tools / 'lib/d8.jar', compiler, *options,
     '--min-api', '21', '--lib', android_jar, '--output', out / 'tests.jar',
     out / 'pine-classes.jar', out / 'test-classes.jar')
 run(tools / 'aapt2', 'link', '-I', android_jar, '--manifest', source / 'AndroidManifest.xml',

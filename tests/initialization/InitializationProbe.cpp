@@ -37,3 +37,8 @@ Java_top_canyie_pine_regression_InitializationTest_mapArtFile(JNIEnv* env, jclas
     }
     // This process-lifetime test mapping deliberately remains present while Pine initializes.
 }
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_top_canyie_pine_regression_TypedBridgeTest_nativeEcho(JNIEnv*, jclass, jobject value) {
+    return value;
+}

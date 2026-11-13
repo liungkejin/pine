@@ -351,27 +351,32 @@ public final class Pine {
         }
 
         String bridgeMethodName;
+        Class<?> returnType;
         // FIXME: WARNING: The following code will cause parameter types and return type to be initialized!!!
         if (method instanceof Method) {
             hookRecord.paramTypes = ((Method) method).getParameterTypes();
-            Class<?> returnType = ((Method) method).getReturnType();
+            returnType = ((Method) method).getReturnType();
             bridgeMethodName = returnType.isPrimitive() ? returnType.getName() + "Bridge" : "objectBridge";
         } else {
             hookRecord.paramTypes = ((Constructor<?>) method).getParameterTypes();
             // Constructor is actually a method named <init> and its return type is void.
+            returnType = void.class;
             bridgeMethodName = "voidBridge";
         }
 
         hookRecord.paramNumber = hookRecord.paramTypes.length;
 
-        hookRecord.bridge = PineConfig.sdkLevel == Build.VERSION_CODES.M && arch == ARCH_ARM64
+        // On O+ a typed DEX bridge keeps receiver/arguments in ART GC roots from method entry.
+        boolean typedBridge = PineConfig.sdkLevel >= Build.VERSION_CODES.O;
+        hookRecord.bridge = typedBridge ? TypedBridge.create(hookRecord, returnType)
+                : PineConfig.sdkLevel == Build.VERSION_CODES.M && arch == ARCH_ARM64
                 ? Arm64MarshmallowEntry.getBridge(bridgeMethodName, hookRecord.paramNumber)
                 : sBridgeMethods.get(bridgeMethodName);
         if (hookRecord.bridge == null)
             throw new AssertionError("Cannot find bridge method for " + method);
 
         Method backup = hook0(thread, declaring, hookRecord, method, hookRecord.bridge, isInlineHook,
-                jni, proxy);
+                jni, proxy, typedBridge);
 
         if (backup == null)
             throw new RuntimeException("Failed to hook method " + method);
@@ -839,7 +844,7 @@ public final class Pine {
 
     private static native Method hook0(long thread, Class<?> declaring, HookRecord hookRecord,
                                        Member target, Method bridge, boolean isInlineHook,
-                                       boolean jni, boolean proxy);
+                                       boolean jni, boolean proxy, boolean typedBridge);
 
     private static native Method hookReplace0(long thread, Class<?> declaring, HookRecord hookRecord,
                                               Member target, Method replacement, Method backup,

@@ -82,5 +82,6 @@ No test hooks or test-specific state are compiled into the production library.
   Android 4.4/5 devices, and a physical 16 KB-page device were not available for
   this validation; 16 KB ELF alignment was checked in both native libraries.
 
-These tests cover initialization and basic Hook behavior. They do not validate
-the separate ART object-conversion/GC race in `Pine.getObject`.
+These initialization cases cover ELF lookup and basic Hook behavior.
+The separate object-conversion/GC regression, typed bridge cases and R8 build
+are documented in [GC_REFERENCES.md](GC_REFERENCES.md).
